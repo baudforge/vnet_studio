@@ -1,0 +1,7 @@
+{
+  "chapters": [
+    { "id": "overview", "title": "Overview", "file": "overview.md" },
+    { "id": "message-trace", "title": "Message trace", "file": "message-trace.md" },
+    { "id": "filtering", "title": "Filtering messages", "file": "filtering.md" }
+  ]
+}

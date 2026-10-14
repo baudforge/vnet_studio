@@ -1,0 +1,10 @@
+{
+  "chapters": [
+    { "id": "getting-started", "title": "Getting started", "file": "getting-started.md" },
+    { "id": "applications", "title": "Application management", "file": "applications.md" },
+    { "id": "instances", "title": "Tabs and windows", "file": "instances.md" },
+    { "id": "logs", "title": "Runtime logs", "file": "logs.md" },
+    { "id": "settings", "title": "Preferences", "file": "settings.md" },
+    { "id": "shortcuts", "title": "Keyboard shortcuts", "file": "shortcuts.md" }
+  ]
+}
