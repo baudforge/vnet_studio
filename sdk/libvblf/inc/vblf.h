@@ -69,7 +69,7 @@
 #define VBLF_API __declspec(dllimport) vblf_result_t __stdcall
 #elif defined(_WIN32)
 #define VBLF_API vblf_result_t __stdcall
-#elif defined(VBLF_SHARED) && defined(VBLF_BUILD_EXPORTS) &&                                       \
+#elif defined(VBLF_SHARED) && defined(VBLF_BUILD_EXPORTS) && \
     (defined(__GNUC__) || defined(__clang__))
 #define VBLF_API __attribute__((visibility("default"))) vblf_result_t
 #else
@@ -78,7 +78,8 @@
 #endif
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 /**
@@ -90,15 +91,16 @@ extern "C" {
 typedef int32_t vblf_result_t;
 
 /** @brief Result codes for the core file APIs. */
-enum {
-    VBLF_OK = 0,                       /**< Operation succeeded. */
-    VBLF_EOF = 1,                      /**< Clean end of the input stream. */
-    VBLF_ERROR_INVALID_ARGUMENT = -1,  /**< A required argument is invalid. */
-    VBLF_ERROR_IO = -2,                /**< An input/output operation failed. */
-    VBLF_ERROR_TRUNCATED = -3,         /**< Input ends before its declared data is complete. */
-    VBLF_ERROR_INVALID_SIGNATURE = -4, /**< A file or object signature is invalid. */
-    VBLF_ERROR_INVALID_SIZE = -5,      /**< A declared header or object size is invalid. */
-    VBLF_ERROR_LIMIT_EXCEEDED = -6,    /**< A configured resource limit was exceeded. */
+enum
+{
+    VBLF_OK = 0,                             /**< Operation succeeded. */
+    VBLF_EOF = 1,                            /**< Clean end of the input stream. */
+    VBLF_ERROR_INVALID_ARGUMENT = -1,        /**< A required argument is invalid. */
+    VBLF_ERROR_IO = -2,                      /**< An input/output operation failed. */
+    VBLF_ERROR_TRUNCATED = -3,               /**< Input ends before its declared data is complete. */
+    VBLF_ERROR_INVALID_SIGNATURE = -4,       /**< A file or object signature is invalid. */
+    VBLF_ERROR_INVALID_SIZE = -5,            /**< A declared header or object size is invalid. */
+    VBLF_ERROR_LIMIT_EXCEEDED = -6,          /**< A configured resource limit was exceeded. */
     VBLF_ERROR_UNSUPPORTED_COMPRESSION = -7, /**< The compression method is unsupported. */
     VBLF_ERROR_INVALID_COMPRESSION = -8,     /**< Compressed data or its checksum is invalid. */
     VBLF_ERROR_UNSUPPORTED_HEADER = -9,      /**< The object header format is unsupported. */
@@ -107,9 +109,9 @@ enum {
     VBLF_ERROR_CANCELLED = -12,              /**< The operation was cancelled. */
     VBLF_ERROR_OUT_OF_MEMORY = -13,          /**< Memory allocation failed. */
     VBLF_ERROR_INTERNAL = -14,               /**< An unexpected implementation failure occurred. */
-    VBLF_ERROR_INVALID_MODE = -15, /**< The requested operation or open mode is incompatible. */
-    VBLF_ERROR_UNSUPPORTED_OBJECT = -16, /**< The object type is unsupported by the operation. */
-    VBLF_ERROR_BUFFER_TOO_SMALL = -17    /**< Caller-provided object storage is too small. */
+    VBLF_ERROR_INVALID_MODE = -15,           /**< The requested operation or open mode is incompatible. */
+    VBLF_ERROR_UNSUPPORTED_OBJECT = -16,     /**< The object type is unsupported by the operation. */
+    VBLF_ERROR_BUFFER_TOO_SMALL = -17        /**< Caller-provided object storage is too small. */
 };
 
 /**
@@ -128,7 +130,8 @@ enum {
 typedef uint32_t vblf_obj_type_t;
 
 /** @brief Upstream object type identifiers. */
-enum {
+enum
+{
     VBLF_OBJ_TYPE_UNKNOWN = 0,
     VBLF_OBJ_TYPE_CAN_MESSAGE = 1,
     VBLF_OBJ_TYPE_CAN_ERROR = 2,
@@ -267,7 +270,8 @@ enum {
 typedef uint32_t vblf_app_id_t;
 
 /** @brief Upstream application identifiers. */
-enum {
+enum
+{
     VBLF_APP_ID_UNKNOWN = 0,
     VBLF_APP_ID_CANALYZER = 1,
     VBLF_APP_ID_CANOE = 2,
@@ -287,7 +291,8 @@ enum {
 typedef uint32_t vblf_compression_t;
 
 /** @brief Upstream compression levels. */
-enum {
+enum
+{
     VBLF_COMPRESSION_NONE = 0,
     VBLF_COMPRESSION_SPEED = 1,
     VBLF_COMPRESSION_DEFAULT = 6,
@@ -302,7 +307,11 @@ enum {
 typedef uint32_t vblf_obj_flags_t;
 
 /** @brief Upstream object header flags. */
-enum { VBLF_OBJ_FLAGS_TIME_TEN_MICS = 0x1, VBLF_OBJ_FLAGS_TIME_ONE_NANS = 0x2 };
+enum
+{
+    VBLF_OBJ_FLAGS_TIME_TEN_MICS = 0x1,
+    VBLF_OBJ_FLAGS_TIME_ONE_NANS = 0x2
+};
 
 /**
  * @brief Trigger event flag mask.
@@ -312,7 +321,8 @@ enum { VBLF_OBJ_FLAGS_TIME_TEN_MICS = 0x1, VBLF_OBJ_FLAGS_TIME_ONE_NANS = 0x2 };
 typedef uint32_t vblf_trigger_flag_t;
 
 /** @brief Upstream trigger event flags. */
-enum {
+enum
+{
     VBLF_TRIGGER_FLAG_SINGLE_TRIGGER = 0x0,
     VBLF_TRIGGER_FLAG_LOGGING_START = 0x1,
     VBLF_TRIGGER_FLAG_LOGGING_STOP = 0x2
@@ -326,7 +336,8 @@ enum {
 typedef uint32_t vblf_can_fd_flags_t;
 
 /** @brief Upstream CAN FD flags. */
-enum {
+enum
+{
     VBLF_CAN_FD_FLAGS_NERR = 0x0004,
     VBLF_CAN_FD_FLAGS_HIGH_VOLTAGE_WAKE_UP = 0x0008,
     VBLF_CAN_FD_FLAGS_REMOTE_FRAME = 0x0010,
@@ -351,7 +362,8 @@ enum {
 typedef uint32_t vblf_sys_var_type_t;
 
 /** @brief Upstream system variable types. */
-enum {
+enum
+{
     VBLF_SYS_VAR_TYPE_DOUBLE = 1,
     VBLF_SYS_VAR_TYPE_LONG = 2,
     VBLF_SYS_VAR_TYPE_STRING = 3,
@@ -368,7 +380,8 @@ enum {
 typedef uint32_t vblf_bus_type_t;
 
 /** @brief Upstream bus type identifiers. */
-enum {
+enum
+{
     VBLF_BUS_TYPE_CAN = 1,
     VBLF_BUS_TYPE_LIN = 5,
     VBLF_BUS_TYPE_MOST = 6,
@@ -386,7 +399,8 @@ enum {
 typedef uint32_t vblf_app_text_source_t;
 
 /** @brief Upstream application text sources. */
-enum {
+enum
+{
     VBLF_APP_TEXT_SOURCE_MEASUREMENTCOMMENT = 0,
     VBLF_APP_TEXT_SOURCE_DBCHANNELINFO = 1,
     VBLF_APP_TEXT_SOURCE_METADATA = 2,
@@ -401,7 +415,8 @@ enum {
 typedef uint32_t vblf_function_bus_type_t;
 
 /** @brief Upstream function bus types. */
-enum {
+enum
+{
     VBLF_FUNCTION_BUS_TYPE_UNDEFINED = 0,
     VBLF_FUNCTION_BUS_TYPE_SIGNAL = 1,
     VBLF_FUNCTION_BUS_TYPE_SERVICE_FUNCTION = 2,
@@ -415,7 +430,8 @@ enum {
 typedef uint32_t vblf_trigger_condition_status_t;
 
 /** @brief Upstream trigger condition status values. */
-enum {
+enum
+{
     VBLF_TRIGGER_CONDITION_STATUS_UNKNOWN = 0,
     VBLF_TRIGGER_CONDITION_STATUS_START = 1,
     VBLF_TRIGGER_CONDITION_STATUS_STOP = 2,
@@ -431,7 +447,8 @@ enum {
 typedef uint32_t vblf_open_mode_t;
 
 /** @brief Supported open modes; modes must not be combined. */
-enum {
+enum
+{
     VBLF_OPEN_READ = 1, /**< Open an existing file for reading. */
     VBLF_OPEN_WRITE = 2 /**< Create a file or truncate an existing file for writing. */
 };
@@ -449,12 +466,13 @@ enum {
  * from the file. The size fields describe serialized data, not C storage.
  * @see vblf_peek_object, vblf_read_object_secure, vblf_write_object
  */
-typedef struct vblf_object_header_base {
+typedef struct vblf_object_header_base
+{
     uint8_t signature[VBLF_OBJ_SIGNATURE_SIZE]; /**< Four signature bytes, without a C NUL. */
     uint16_t header_size;                       /**< Serialized header size in bytes. */
     uint16_t header_version;                    /**< Serialized object header version. */
-    uint32_t object_size; /**< Serialized header and body size, excluding alignment padding. */
-    vblf_obj_type_t object_type; /**< Original BLF object type, including unsupported values. */
+    uint32_t object_size;                       /**< Serialized header and body size, excluding alignment padding. */
+    vblf_obj_type_t object_type;                /**< Original BLF object type, including unsupported values. */
 } vblf_object_header_base_t;
 
 /**
