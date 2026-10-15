@@ -493,11 +493,17 @@ typedef struct vblf_handle vblf_handle_t;
  * @retval VBLF_OK The file was opened successfully.
  * @retval VBLF_ERROR_INVALID_ARGUMENT A required argument is invalid.
  * @retval VBLF_ERROR_INVALID_MODE The open mode is unsupported.
+ * @retval VBLF_ERROR_INVALID_SIGNATURE The file header does not begin with LOGG.
+ * @retval VBLF_ERROR_INVALID_SIZE The declared file header is shorter than 72 bytes.
+ * @retval VBLF_ERROR_TRUNCATED The file ends within its declared file header.
  * @return Another negative vblf_result_t on failure.
  *
  * @post If @p out_handle is valid, @c *out_handle is NULL on failure.
  * @note Write mode creates a new file or truncates an existing file.
  * Close any previous handle before reusing its output slot.
+ * @note Read mode decodes the fixed file-header fields and positions the stream
+ * after the complete declared header. Additional header bytes are skipped.
+ * Recorded statistics are preserved as metadata; object data is validated separately.
  * @see vblf_close_handle
  */
 VBLF_API vblf_create_file(const char *path_utf8, vblf_open_mode_t mode, vblf_handle_t **out_handle);
