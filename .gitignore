@@ -80,5 +80,6 @@ coverage/
 /artifacts/
 
 # Local configuration
+/CMakeUserPresets.json
 .env.local
 .env.*.local
