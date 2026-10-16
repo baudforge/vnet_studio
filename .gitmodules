@@ -1,3 +1,6 @@
 [submodule "third_party/utfcpp"]
 	path = third_party/utfcpp
 	url = git@github.com:nemtrif/utfcpp.git
+[submodule "third_party/zlib"]
+	path = third_party/zlib
+	url = git@github.com:madler/zlib.git

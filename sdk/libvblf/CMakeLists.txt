@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(vblf LANGUAGES CXX)
+project(vblf LANGUAGES C CXX)
 
 option(BUILD_SHARED_LIBS "Build shared libraries." ON)
 
-if(NOT TARGET utf8cpp::utf8cpp)
+if(NOT TARGET utf8cpp::utf8cpp OR NOT TARGET ZLIB::ZLIBSTATIC)
     add_subdirectory(
         "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party"
         "${CMAKE_CURRENT_BINARY_DIR}/third_party"
@@ -18,7 +18,7 @@ add_library(vblf
 )
 add_library(vblf::vblf ALIAS vblf)
 
-target_link_libraries(vblf PRIVATE utf8cpp::utf8cpp)
+target_link_libraries(vblf PRIVATE utf8cpp::utf8cpp ZLIB::ZLIBSTATIC)
 
 target_compile_features(vblf PRIVATE cxx_std_17)
 set_target_properties(vblf PROPERTIES
@@ -53,3 +53,11 @@ install(TARGETS vblf
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 install(FILES inc/vblf.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+if(NOT BUILD_SHARED_LIBS AND TARGET zlibstatic)
+    install(TARGETS zlibstatic ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endif()
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/zlib/LICENSE"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/vblf"
+    RENAME zlib.txt
+)

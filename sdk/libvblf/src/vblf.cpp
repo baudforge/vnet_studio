@@ -26,7 +26,9 @@
 #include "vblf.h"
 
 #include <utf8.h>
+#include <zlib.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -71,12 +73,40 @@ struct vblf_file_header
     uint64_t restore_points_offset = 0;
 };
 
+/** @brief Bounded input buffer, decompressor and pending logical object header. */
+struct vblf_reader
+{
+    std::array<uint8_t, 16 * 1024> input{};
+    z_stream inflater{};
+    bool inflater_initialized = false;
+    bool source_active = false;
+    uint16_t compression_method = 0;
+    uint32_t input_remaining = 0;
+    uint32_t output_remaining = 0;
+    bool header_pending = false;
+    vblf_object_header_base_t pending_header{};
+    vblf_result_t terminal_result = VBLF_OK;
+
+    vblf_reader() = default;
+    vblf_reader(const vblf_reader &) = delete;
+    vblf_reader &operator=(const vblf_reader &) = delete;
+
+    ~vblf_reader()
+    {
+        if (inflater_initialized)
+        {
+            inflateEnd(&inflater);
+        }
+    }
+};
+
 /** @brief Private owner of one binary file stream and its decoded file header. */
 struct vblf_handle
 {
     std::fstream file;
     vblf_open_mode_t mode = 0;
     vblf_file_header header;
+    std::unique_ptr<vblf_reader> reader;
 };
 
 namespace
@@ -196,6 +226,288 @@ vblf_result_t read_file_header(std::fstream &file, vblf_file_header &out_header)
     return VBLF_OK;
 }
 
+/** @brief Read a fixed number of bytes, distinguishing clean EOF from truncation. */
+vblf_result_t read_file_bytes(std::fstream &file, uint8_t *data, uint32_t count)
+{
+    if (file.read(reinterpret_cast<char *>(data), count))
+    {
+        return VBLF_OK;
+    }
+    if (file.bad())
+    {
+        return VBLF_ERROR_IO;
+    }
+    return file.gcount() == 0 && file.eof() ? VBLF_EOF : VBLF_ERROR_TRUNCATED;
+}
+
+/** @brief Decode and validate the metadata shared by all serialized objects. */
+vblf_result_t decode_object_header(const uint8_t *data, vblf_object_header_base_t &out_header)
+{
+    if (std::memcmp(data, VBLF_OBJ_SIGNATURE, VBLF_OBJ_SIGNATURE_SIZE) != 0)
+    {
+        return VBLF_ERROR_INVALID_SIGNATURE;
+    }
+    vblf_object_header_base_t header{};
+    std::memcpy(header.signature, data, VBLF_OBJ_SIGNATURE_SIZE);
+    header.header_size = read_u16_le(data + 4);
+    header.header_version = read_u16_le(data + 6);
+    header.object_size = read_u32_le(data + 8);
+    header.object_type = read_u32_le(data + 12);
+    if (header.header_size < 16 || header.object_size < header.header_size)
+    {
+        return VBLF_ERROR_INVALID_SIZE;
+    }
+    out_header = header;
+    return VBLF_OK;
+}
+
+/** @brief Check a physical object's declared boundary without reading its payload. */
+vblf_result_t check_file_extent(std::fstream &file, uint32_t remaining)
+{
+    const std::streamoff position = file.tellg();
+    file.seekg(0, std::ios::end);
+    const std::streamoff end = file.tellg();
+    if (!file || position < 0 || end < position)
+    {
+        return VBLF_ERROR_IO;
+    }
+    if (static_cast<uint64_t>(end - position) < remaining)
+    {
+        return VBLF_ERROR_TRUNCATED;
+    }
+    file.seekg(position, std::ios::beg);
+    return file ? VBLF_OK : VBLF_ERROR_IO;
+}
+
+/** @brief Open the next raw object or standard uncompressed/zlib log container. */
+vblf_result_t begin_source(std::fstream &file, vblf_reader &reader)
+{
+    std::array<uint8_t, 16> data{};
+    uint32_t padding = 0;
+    do
+    {
+        const vblf_result_t result = read_file_bytes(file, data.data(), 1);
+        if (result != VBLF_OK)
+        {
+            return result;
+        }
+        if (data[0] != 0)
+        {
+            break;
+        }
+        if (++padding > 7)
+        {
+            return VBLF_ERROR_INVALID_SIGNATURE;
+        }
+    } while (true);
+
+    vblf_result_t result = read_file_bytes(file, data.data() + 1, 15);
+    if (result != VBLF_OK)
+    {
+        return result == VBLF_EOF ? VBLF_ERROR_TRUNCATED : result;
+    }
+    vblf_object_header_base_t header{};
+    result = decode_object_header(data.data(), header);
+    if (result != VBLF_OK)
+    {
+        return result;
+    }
+    result = check_file_extent(file, header.object_size - 16);
+    if (result != VBLF_OK)
+    {
+        return result;
+    }
+
+    if (header.object_type != VBLF_OBJ_TYPE_LOG_CONTAINER)
+    {
+        file.seekg(-16, std::ios::cur);
+        if (!file)
+        {
+            return VBLF_ERROR_IO;
+        }
+        reader.compression_method = 0;
+        reader.input_remaining = header.object_size;
+        reader.output_remaining = header.object_size;
+    }
+    else
+    {
+        if (header.object_size < 32)
+        {
+            return VBLF_ERROR_INVALID_SIZE;
+        }
+        if (header.header_version != 1 || (header.header_size != 16 && header.header_size != 32))
+        {
+            return VBLF_ERROR_UNSUPPORTED_HEADER;
+        }
+        result = read_file_bytes(file, data.data(), 16);
+        if (result != VBLF_OK)
+        {
+            return result == VBLF_EOF ? VBLF_ERROR_TRUNCATED : result;
+        }
+        reader.compression_method = read_u16_le(data.data());
+        reader.input_remaining = header.object_size - 32;
+        reader.output_remaining = read_u32_le(data.data() + 8);
+        if (reader.compression_method == 0)
+        {
+            if (reader.input_remaining != reader.output_remaining)
+            {
+                return VBLF_ERROR_INVALID_SIZE;
+            }
+        }
+        else if (reader.compression_method == 2)
+        {
+            const int status = reader.inflater_initialized ? inflateReset(&reader.inflater) : inflateInit(&reader.inflater);
+            if (status != Z_OK)
+            {
+                return status == Z_MEM_ERROR ? VBLF_ERROR_OUT_OF_MEMORY : VBLF_ERROR_INTERNAL;
+            }
+            reader.inflater_initialized = true;
+            reader.inflater.next_in = Z_NULL;
+            reader.inflater.avail_in = 0;
+        }
+        else
+        {
+            return VBLF_ERROR_UNSUPPORTED_COMPRESSION;
+        }
+    }
+    reader.source_active = true;
+    return VBLF_OK;
+}
+
+/**
+ * @brief Read logical object bytes across container boundaries with bounded memory.
+ * @note zlib input is owned by the reader. Output buffers are used only during
+ * this call. The stream is finalized when its declared output length is reached.
+ */
+vblf_result_t read_object_bytes(std::fstream &file, vblf_reader &reader, uint8_t *data, uint32_t count)
+{
+    uint32_t written = 0;
+    while (written < count || (reader.source_active && reader.output_remaining == 0))
+    {
+        if (!reader.source_active)
+        {
+            const vblf_result_t result = begin_source(file, reader);
+            if (result != VBLF_OK)
+            {
+                return result == VBLF_EOF && written != 0 ? VBLF_ERROR_TRUNCATED : result;
+            }
+        }
+
+        if (reader.compression_method == 0)
+        {
+            const uint32_t length = std::min(count - written, reader.output_remaining);
+            if (length != 0)
+            {
+                const vblf_result_t result = read_file_bytes(file, data + written, length);
+                if (result != VBLF_OK)
+                {
+                    return result == VBLF_EOF ? VBLF_ERROR_TRUNCATED : result;
+                }
+                written += length;
+                reader.input_remaining -= length;
+                reader.output_remaining -= length;
+            }
+            reader.source_active = reader.output_remaining != 0;
+            continue;
+        }
+
+        if (reader.inflater.avail_in == 0 && reader.input_remaining != 0)
+        {
+            const uint32_t length = std::min(reader.input_remaining, static_cast<uint32_t>(reader.input.size()));
+            const vblf_result_t result = read_file_bytes(file, reader.input.data(), length);
+            if (result != VBLF_OK)
+            {
+                return result == VBLF_EOF ? VBLF_ERROR_TRUNCATED : result;
+            }
+            reader.input_remaining -= length;
+            reader.inflater.next_in = reader.input.data();
+            reader.inflater.avail_in = length;
+        }
+
+        uint8_t excess = 0;
+        const bool finishing = reader.output_remaining == 0;
+        const uint32_t capacity = finishing ? 1 : std::min(count - written, reader.output_remaining);
+        reader.inflater.next_out = finishing ? &excess : data + written;
+        reader.inflater.avail_out = capacity;
+        const uInt input_before = reader.inflater.avail_in;
+        const int status = inflate(&reader.inflater, Z_NO_FLUSH);
+        const uint32_t produced = capacity - reader.inflater.avail_out;
+        reader.inflater.next_out = Z_NULL;
+        reader.inflater.avail_out = 0;
+        if (finishing && produced != 0)
+        {
+            return VBLF_ERROR_INVALID_COMPRESSION;
+        }
+        if (!finishing)
+        {
+            written += produced;
+            reader.output_remaining -= produced;
+        }
+        if (status == Z_STREAM_END)
+        {
+            if (reader.output_remaining != 0 || reader.input_remaining != 0 || reader.inflater.avail_in != 0)
+            {
+                return VBLF_ERROR_INVALID_COMPRESSION;
+            }
+            reader.source_active = false;
+        }
+        else if (status == Z_MEM_ERROR)
+        {
+            return VBLF_ERROR_OUT_OF_MEMORY;
+        }
+        else if (status != Z_OK && status != Z_BUF_ERROR)
+        {
+            return status == Z_STREAM_ERROR ? VBLF_ERROR_INTERNAL : VBLF_ERROR_INVALID_COMPRESSION;
+        }
+        else if (produced == 0 && reader.inflater.avail_in == input_before)
+        {
+            return VBLF_ERROR_INVALID_COMPRESSION;
+        }
+    }
+    return VBLF_OK;
+}
+
+/** @brief Read a common business-object header, skipping only bounded zero padding. */
+vblf_result_t read_next_object_header(std::fstream &file, vblf_reader &reader, vblf_object_header_base_t &out_header)
+{
+    std::array<uint8_t, 16> data{};
+    uint32_t padding = 0;
+    do
+    {
+        const vblf_result_t result = read_object_bytes(file, reader, data.data(), 1);
+        if (result != VBLF_OK)
+        {
+            return result;
+        }
+        if (data[0] != 0)
+        {
+            break;
+        }
+        if (++padding > 7)
+        {
+            return VBLF_ERROR_INVALID_SIGNATURE;
+        }
+    } while (true);
+
+    const vblf_result_t result = read_object_bytes(file, reader, data.data() + 1, 15);
+    if (result != VBLF_OK)
+    {
+        return result == VBLF_EOF ? VBLF_ERROR_TRUNCATED : result;
+    }
+    vblf_object_header_base_t header{};
+    const vblf_result_t decoded = decode_object_header(data.data(), header);
+    if (decoded != VBLF_OK)
+    {
+        return decoded;
+    }
+    if (header.object_type == VBLF_OBJ_TYPE_LOG_CONTAINER)
+    {
+        return VBLF_ERROR_INVALID_PAYLOAD;
+    }
+    out_header = header;
+    return VBLF_OK;
+}
+
 } // namespace
 
 /**
@@ -305,4 +617,62 @@ VBLF_API vblf_close_handle(vblf_handle_t *handle)
     {
         return VBLF_ERROR_INTERNAL;
     }
+}
+
+/** @brief Cache and return the next logical object header without consuming its payload. */
+VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_header)
+{
+    if (handle == nullptr || out_header == nullptr)
+    {
+        return VBLF_ERROR_INVALID_ARGUMENT;
+    }
+    if (handle->mode != VBLF_OPEN_READ)
+    {
+        return VBLF_ERROR_INVALID_MODE;
+    }
+
+    vblf_result_t result = VBLF_ERROR_INTERNAL;
+    try
+    {
+        if (!handle->reader)
+        {
+            handle->reader = std::make_unique<vblf_reader>();
+        }
+        auto &reader = *handle->reader;
+        if (reader.header_pending)
+        {
+            *out_header = reader.pending_header;
+            return VBLF_OK;
+        }
+        if (reader.terminal_result != VBLF_OK)
+        {
+            return reader.terminal_result;
+        }
+        vblf_object_header_base_t header{};
+        result = read_next_object_header(handle->file, reader, header);
+        if (result == VBLF_OK)
+        {
+            reader.pending_header = header;
+            reader.header_pending = true;
+            *out_header = header;
+            return VBLF_OK;
+        }
+    }
+    catch (const std::bad_alloc &)
+    {
+        result = VBLF_ERROR_OUT_OF_MEMORY;
+    }
+    catch (const std::system_error &)
+    {
+        result = VBLF_ERROR_IO;
+    }
+    catch (...)
+    {
+        result = VBLF_ERROR_INTERNAL;
+    }
+    if (handle->reader)
+    {
+        handle->reader->terminal_result = result;
+    }
+    return result;
 }

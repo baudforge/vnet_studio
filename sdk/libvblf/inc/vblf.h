@@ -534,12 +534,24 @@ VBLF_API vblf_close_handle(vblf_handle_t *handle);
  * @retval VBLF_EOF The input stream reached a clean end.
  * @retval VBLF_ERROR_INVALID_ARGUMENT A required argument is invalid.
  * @retval VBLF_ERROR_INVALID_MODE The handle was not opened for reading.
+ * @retval VBLF_ERROR_INVALID_SIGNATURE An object signature is invalid.
+ * @retval VBLF_ERROR_INVALID_SIZE An object or uncompressed-container size is invalid.
+ * @retval VBLF_ERROR_TRUNCATED A required header or physical container is incomplete.
+ * @retval VBLF_ERROR_UNSUPPORTED_COMPRESSION A container uses an unknown compression method.
+ * @retval VBLF_ERROR_INVALID_COMPRESSION A zlib stream or its declared output length is invalid.
  * @return Another negative vblf_result_t on failure.
  *
  * @post The output remains unchanged at EOF or on error.
  * @note Repeated peeks report the same object until a successful read or skip.
  * The object type need not have a decoder. No payload memory is transferred to
  * the caller, and the returned header does not require vblf_free_object().
+ * @note Physical log containers are unwrapped internally. Standard uncompressed
+ * and zlib containers are supported, including headers split across containers.
+ * Nested containers are rejected. Unknown business-object types and header
+ * versions can still be inspected when their common base header is valid.
+ * @note Peeking may advance the physical file and decompressor to cache a header;
+ * the logical object remains pending. Its body and any unread compressed bytes
+ * are validated by later reads. EOF and stream errors are cached until close.
  * @see vblf_read_object_secure, vblf_skip_object
  */
 VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_header);
