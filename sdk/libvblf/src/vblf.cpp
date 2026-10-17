@@ -676,3 +676,69 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
     }
     return result;
 }
+
+/** @brief Discard one logical object using bounded storage without decoding its payload. */
+VBLF_API vblf_skip_object(vblf_handle_t *handle)
+{
+    if (handle == nullptr)
+    {
+        return VBLF_ERROR_INVALID_ARGUMENT;
+    }
+    if (handle->mode != VBLF_OPEN_READ)
+    {
+        return VBLF_ERROR_INVALID_MODE;
+    }
+
+    vblf_result_t result = VBLF_ERROR_INTERNAL;
+    try
+    {
+        vblf_object_header_base_t header{};
+        result = vblf_peek_object(handle, &header);
+        if (result != VBLF_OK)
+        {
+            return result;
+        }
+
+        auto &reader = *handle->reader;
+        std::array<uint8_t, 4096> discard{};
+        uint32_t remaining = header.object_size - 16;
+        while (remaining != 0)
+        {
+            const uint32_t length = std::min(remaining, static_cast<uint32_t>(discard.size()));
+            result = read_object_bytes(handle->file, reader, discard.data(), length);
+            if (result != VBLF_OK)
+            {
+                if (result == VBLF_EOF)
+                {
+                    result = VBLF_ERROR_TRUNCATED;
+                }
+                break;
+            }
+            remaining -= length;
+        }
+        if (remaining == 0)
+        {
+            reader.header_pending = false;
+            return VBLF_OK;
+        }
+    }
+    catch (const std::bad_alloc &)
+    {
+        result = VBLF_ERROR_OUT_OF_MEMORY;
+    }
+    catch (const std::system_error &)
+    {
+        result = VBLF_ERROR_IO;
+    }
+    catch (...)
+    {
+        result = VBLF_ERROR_INTERNAL;
+    }
+    if (handle->reader)
+    {
+        // A failed discard may have consumed bytes, so the cached header is no longer usable.
+        handle->reader->header_pending = false;
+        handle->reader->terminal_result = result;
+    }
+    return result;
+}

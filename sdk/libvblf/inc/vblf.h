@@ -600,11 +600,21 @@ VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_
  * @retval VBLF_EOF The input stream reached a clean end.
  * @retval VBLF_ERROR_INVALID_ARGUMENT The handle is invalid.
  * @retval VBLF_ERROR_INVALID_MODE The handle was not opened for reading.
+ * @retval VBLF_ERROR_TRUNCATED The input ends before the complete object is available.
+ * @retval VBLF_ERROR_INVALID_COMPRESSION Compressed input encountered while skipping is invalid.
  * @return Another negative vblf_result_t on failure.
  *
+ * @post On success, the next peek or skip operates on the following object.
+ * At clean EOF, no object is consumed and VBLF_EOF is returned.
+ * @note This call can be used directly or after vblf_peek_object(). It discards
+ * the extended header and payload through the logical reader using a fixed
+ * 4 KiB scratch buffer, including when an object spans multiple containers.
  * @note Unsupported object types and extended header versions can be skipped
  * when their base header and declared boundaries are valid. Corrupt framing or
  * compressed input can still cause an error. No object storage is required.
+ * @note A stream error invalidates the pending object. Later peek and skip calls
+ * return the cached error until the handle is closed; a partially skipped object
+ * cannot be retried.
  * @see vblf_peek_object, vblf_read_object_secure
  */
 VBLF_API vblf_skip_object(vblf_handle_t *handle);
