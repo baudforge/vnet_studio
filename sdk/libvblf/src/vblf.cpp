@@ -508,6 +508,99 @@ vblf_result_t read_next_object_header(std::fstream &file, vblf_reader &reader, v
     return VBLF_OK;
 }
 
+/** @brief Decode a version 1 header from bytes following its common base. */
+vblf_object_header_t decode_object_header_v1(const vblf_object_header_base_t &base, const uint8_t *data) noexcept
+{
+    vblf_object_header_t header{};
+    header.base = base;
+    header.object_flags = read_u32_le(data);
+    header.client_index = read_u16_le(data + 4);
+    header.object_version = read_u16_le(data + 6);
+    header.object_time_stamp = read_u64_le(data + 8);
+    return header;
+}
+
+/** @brief Read the fixed Classic CAN layout into temporary caller-independent storage. */
+vblf_result_t read_can_message(std::fstream &file, vblf_reader &reader, const vblf_object_header_base_t &header, vblf_can_message_t &message)
+{
+    if (header.object_size != 48)
+    {
+        return VBLF_ERROR_INVALID_SIZE;
+    }
+    std::array<uint8_t, 32> data{};
+    const vblf_result_t result = read_object_bytes(file, reader, data.data(), static_cast<uint32_t>(data.size()));
+    if (result != VBLF_OK)
+    {
+        return result;
+    }
+    message.header = decode_object_header_v1(header, data.data());
+    message.channel = read_u16_le(data.data() + 16);
+    message.flags = data[18];
+    message.dlc = data[19];
+    message.frame_id = read_u32_le(data.data() + 20);
+    std::copy_n(data.data() + 24, 8, message.data);
+    return VBLF_OK;
+}
+
+/**
+ * @brief Read compact CAN FD metadata, bounded inline data and optional bit timing.
+ * @note Field offsets follow the MIT-licensed vblf.can.CanFdMessage64 at revision
+ * e509ae9c64c834851418e74e9bd89a32efe41d3c. No serialized C structure is copied.
+ */
+vblf_result_t read_can_fd_message_64(std::fstream &file, vblf_reader &reader, const vblf_object_header_base_t &header, vblf_can_fd_message_64_t &message)
+{
+    if (header.object_size < 72 || header.object_size > 144)
+    {
+        return VBLF_ERROR_INVALID_SIZE;
+    }
+    std::array<uint8_t, 56> data{};
+    vblf_result_t result = read_object_bytes(file, reader, data.data(), static_cast<uint32_t>(data.size()));
+    if (result != VBLF_OK)
+    {
+        return result;
+    }
+    message.header = decode_object_header_v1(header, data.data());
+    message.channel = data[16];
+    message.dlc = data[17];
+    message.valid_data_bytes = data[18];
+    message.tx_count = data[19];
+    message.frame_id = read_u32_le(data.data() + 20);
+    message.frame_length = read_u32_le(data.data() + 24);
+    message.flags = read_u32_le(data.data() + 28);
+    message.btr_cfg_arb = read_u32_le(data.data() + 32);
+    message.btr_cfg_data = read_u32_le(data.data() + 36);
+    message.time_offset_brs_ns = read_u32_le(data.data() + 40);
+    message.time_offset_crc_del_ns = read_u32_le(data.data() + 44);
+    message.bit_count = read_u16_le(data.data() + 48);
+    message.dir = data[50];
+    message.ext_data_offset = data[51];
+    message.crc = read_u32_le(data.data() + 52);
+
+    const uint32_t data_end = message.ext_data_offset == 0 ? header.object_size : message.ext_data_offset;
+    if (data_end < 72 || data_end > header.object_size || data_end - 72 > sizeof(message.data) ||
+        (message.ext_data_offset != 0 && header.object_size - data_end != 8))
+    {
+        return VBLF_ERROR_INVALID_SIZE;
+    }
+    if (message.valid_data_bytes > sizeof(message.data))
+    {
+        return VBLF_ERROR_INVALID_PAYLOAD;
+    }
+    message.data_size = data_end - 72;
+    result = read_object_bytes(file, reader, message.data, message.data_size);
+    if (result != VBLF_OK || message.ext_data_offset == 0)
+    {
+        return result;
+    }
+    result = read_object_bytes(file, reader, data.data(), 8);
+    if (result == VBLF_OK)
+    {
+        message.btr_ext_arb = read_u32_le(data.data());
+        message.btr_ext_data = read_u32_le(data.data() + 4);
+    }
+    return result;
+}
+
 } // namespace
 
 /**
@@ -677,7 +770,7 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
     return result;
 }
 
-/** @brief Decode one Classic CAN object before publishing any caller-visible fields. */
+/** @brief Decode one supported CAN object before publishing any caller-visible fields. */
 VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_t *out_object, uint32_t object_capacity)
 {
     if (handle == nullptr || out_object == nullptr)
@@ -698,7 +791,8 @@ VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_
         {
             return result;
         }
-        if (header.object_type != VBLF_OBJ_TYPE_CAN_MESSAGE)
+        const bool classic = header.object_type == VBLF_OBJ_TYPE_CAN_MESSAGE;
+        if (!classic && header.object_type != VBLF_OBJ_TYPE_CAN_FD_MESSAGE_64)
         {
             return VBLF_ERROR_UNSUPPORTED_OBJECT;
         }
@@ -706,43 +800,40 @@ VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_
         {
             return VBLF_ERROR_UNSUPPORTED_HEADER;
         }
-        if (object_capacity < sizeof(vblf_can_message_t))
+        const auto required_capacity = classic ? sizeof(vblf_can_message_t) : sizeof(vblf_can_fd_message_64_t);
+        if (object_capacity < required_capacity)
         {
             return VBLF_ERROR_BUFFER_TOO_SMALL;
         }
 
-        if (header.object_size != 48)
+        auto &reader = *handle->reader;
+        if (classic)
         {
-            result = VBLF_ERROR_INVALID_SIZE;
+            vblf_can_message_t message{};
+            result = read_can_message(handle->file, reader, header, message);
+            if (result == VBLF_OK)
+            {
+                // The caller supplies the base member of the matching concrete C object.
+                *reinterpret_cast<vblf_can_message_t *>(out_object) = message;
+            }
         }
         else
         {
-            auto &reader = *handle->reader;
-            std::array<uint8_t, 32> data{};
-            result = read_object_bytes(handle->file, reader, data.data(), static_cast<uint32_t>(data.size()));
+            vblf_can_fd_message_64_t message{};
+            result = read_can_fd_message_64(handle->file, reader, header, message);
             if (result == VBLF_OK)
             {
-                vblf_can_message_t message{};
-                message.header.base = header;
-                message.header.object_flags = read_u32_le(data.data());
-                message.header.client_index = read_u16_le(data.data() + 4);
-                message.header.object_version = read_u16_le(data.data() + 6);
-                message.header.object_time_stamp = read_u64_le(data.data() + 8);
-                message.channel = read_u16_le(data.data() + 16);
-                message.flags = data[18];
-                message.dlc = data[19];
-                message.frame_id = read_u32_le(data.data() + 20);
-                std::copy_n(data.data() + 24, 8, message.data);
-
-                // The caller supplies the base member of an actual vblf_can_message_t.
-                *reinterpret_cast<vblf_can_message_t *>(out_object) = message;
-                reader.header_pending = false;
-                return VBLF_OK;
+                *reinterpret_cast<vblf_can_fd_message_64_t *>(out_object) = message;
             }
-            if (result == VBLF_EOF)
-            {
-                result = VBLF_ERROR_TRUNCATED;
-            }
+        }
+        if (result == VBLF_OK)
+        {
+            reader.header_pending = false;
+            return VBLF_OK;
+        }
+        if (result == VBLF_EOF)
+        {
+            result = VBLF_ERROR_TRUNCATED;
         }
     }
     catch (const std::bad_alloc &)
@@ -846,7 +937,8 @@ VBLF_API vblf_free_object(vblf_handle_t *handle, vblf_object_header_base_t *obje
     {
         return VBLF_ERROR_INVALID_MODE;
     }
-    if (object->object_type != VBLF_OBJ_TYPE_CAN_MESSAGE)
+    const bool classic = object->object_type == VBLF_OBJ_TYPE_CAN_MESSAGE;
+    if (!classic && object->object_type != VBLF_OBJ_TYPE_CAN_FD_MESSAGE_64)
     {
         return VBLF_ERROR_UNSUPPORTED_OBJECT;
     }
@@ -854,5 +946,6 @@ VBLF_API vblf_free_object(vblf_handle_t *handle, vblf_object_header_base_t *obje
     {
         return VBLF_ERROR_UNSUPPORTED_HEADER;
     }
-    return object->object_size == 48 ? VBLF_OK : VBLF_ERROR_INVALID_SIZE;
+    const bool valid_size = classic ? object->object_size == 48 : object->object_size >= 72 && object->object_size <= 144;
+    return valid_size ? VBLF_OK : VBLF_ERROR_INVALID_SIZE;
 }

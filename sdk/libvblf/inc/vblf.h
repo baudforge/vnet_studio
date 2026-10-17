@@ -508,6 +508,40 @@ typedef struct vblf_can_message
 } vblf_can_message_t;
 
 /**
+ * @brief CAN/CAN FD message using the compact CAN_FD_MESSAGE_64 layout (type 101).
+ * @note Uses a version 1 header and a 40-byte fixed body followed by up to 64
+ * stored data bytes and an optional 8-byte bit-timing extension.
+ * @note All metadata is preserved. data_size reports the number of stored data
+ * bytes, excluding the extension. Unstored bytes in data are zero-filled;
+ * valid_data_bytes may exceed data_size but must not exceed 64.
+ * @note The FDF flag distinguishes CAN FD from Classic CAN; the object type
+ * alone does not. No dynamic members are allocated, so release is optional.
+ */
+typedef struct vblf_can_fd_message_64
+{
+    vblf_object_header_t header;     /**< Version 1 header at offset zero. */
+    uint8_t channel;                 /**< Original BLF channel number. */
+    uint8_t dlc;                     /**< Raw DLC, without CAN FD length conversion. */
+    uint8_t valid_data_bytes;        /**< Valid payload length, at most 64 bytes. */
+    uint8_t tx_count;                /**< Original transmission count. */
+    uint32_t frame_id;               /**< Raw identifier; bit 31 marks an extended identifier. */
+    uint32_t frame_length;           /**< Original frame duration in nanoseconds. */
+    vblf_can_fd_flags_t flags;       /**< CAN/CAN FD flags, including FDF, BRS, ESI and RTR. */
+    uint32_t btr_cfg_arb;            /**< Arbitration bit-timing configuration. */
+    uint32_t btr_cfg_data;           /**< Data-phase bit-timing configuration. */
+    uint32_t time_offset_brs_ns;     /**< BRS field time offset in nanoseconds. */
+    uint32_t time_offset_crc_del_ns; /**< CRC delimiter time offset in nanoseconds. */
+    uint16_t bit_count;              /**< Original bit count. */
+    uint8_t dir;                     /**< Original direction: zero denotes receive. */
+    uint8_t ext_data_offset;         /**< Absolute serialized extension offset, or zero if absent. */
+    uint32_t crc;                    /**< Original frame CRC. */
+    uint32_t data_size;              /**< Number of data bytes physically stored in this object, at most 64. */
+    uint8_t data[64];                /**< Inline data; bytes beyond data_size are zero-filled. */
+    uint32_t btr_ext_arb;            /**< Extended arbitration bit timing, or zero if absent. */
+    uint32_t btr_ext_data;           /**< Extended data-phase bit timing, or zero if absent. */
+} vblf_can_fd_message_64_t;
+
+/**
  * @brief Opaque, library-owned file handle.
  * @note Separate handles may be used concurrently. Calls on one handle require
  * external synchronization, including object release and handle close.
@@ -607,6 +641,7 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
  * @retval VBLF_ERROR_UNSUPPORTED_HEADER The header version or header size is unsupported.
  * @retval VBLF_ERROR_INVALID_SIZE The serialized size does not match the supported layout.
  * @retval VBLF_ERROR_TRUNCATED The input ends within the object.
+ * @retval VBLF_ERROR_INVALID_PAYLOAD A CAN FD valid-data length exceeds 64 bytes.
  * @return Another negative vblf_result_t on failure.
  *
  * @pre The storage must not contain dynamic members from an earlier read that
@@ -619,8 +654,12 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
  * @note The library allocates variable-length members. They remain valid across
  * later reads until released through vblf_free_object() on the same handle.
  * The caller-owned structure itself is never allocated or freed by the library.
- * @note Currently supports only VBLF_OBJ_TYPE_CAN_MESSAGE using
- * vblf_can_message_t, header_version 1, header_size 32 and object_size 48.
+ * @note Supports VBLF_OBJ_TYPE_CAN_MESSAGE using vblf_can_message_t (object_size
+ * 48), and VBLF_OBJ_TYPE_CAN_FD_MESSAGE_64 using vblf_can_fd_message_64_t
+ * (object_size 72 through 144, depending on data and extension lengths).
+ * Both require header_version 1 and header_size 32. For type 101, a nonzero
+ * ext_data_offset must follow at most 64 data bytes and point to the final
+ * 8-byte extension. Neither object type allocates dynamic members.
  * Raw field values are preserved without timestamp or CAN identifier conversion.
  * A serialized object_size is not a valid substitute for the C storage capacity.
  * @see vblf_peek_object, vblf_skip_object, vblf_free_object
@@ -714,8 +753,8 @@ VBLF_API vblf_write_object(vblf_handle_t *handle, const vblf_object_header_base_
  * The caller-owned structure itself is not released, and its base header is kept.
  * @note Release all read objects before closing their handle. Do not use free(),
  * delete or another allocator to release library-allocated members.
- * @note Currently supports vblf_can_message_t only. It contains no dynamic
- * members, so releasing it is optional and leaves every field unchanged.
+ * @note Supports vblf_can_message_t and vblf_can_fd_message_64_t. These contain
+ * no dynamic members, so release is optional and leaves every field unchanged.
  * @see vblf_read_object_secure, vblf_close_handle
  */
 VBLF_API vblf_free_object(vblf_handle_t *handle, vblf_object_header_base_t *object);
