@@ -677,6 +677,94 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
     return result;
 }
 
+/** @brief Decode one Classic CAN object before publishing any caller-visible fields. */
+VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_t *out_object, uint32_t object_capacity)
+{
+    if (handle == nullptr || out_object == nullptr)
+    {
+        return VBLF_ERROR_INVALID_ARGUMENT;
+    }
+    if (handle->mode != VBLF_OPEN_READ)
+    {
+        return VBLF_ERROR_INVALID_MODE;
+    }
+
+    vblf_result_t result = VBLF_ERROR_INTERNAL;
+    try
+    {
+        vblf_object_header_base_t header{};
+        result = vblf_peek_object(handle, &header);
+        if (result != VBLF_OK)
+        {
+            return result;
+        }
+        if (header.object_type != VBLF_OBJ_TYPE_CAN_MESSAGE)
+        {
+            return VBLF_ERROR_UNSUPPORTED_OBJECT;
+        }
+        if (header.header_version != 1 || header.header_size != 32)
+        {
+            return VBLF_ERROR_UNSUPPORTED_HEADER;
+        }
+        if (object_capacity < sizeof(vblf_can_message_t))
+        {
+            return VBLF_ERROR_BUFFER_TOO_SMALL;
+        }
+
+        if (header.object_size != 48)
+        {
+            result = VBLF_ERROR_INVALID_SIZE;
+        }
+        else
+        {
+            auto &reader = *handle->reader;
+            std::array<uint8_t, 32> data{};
+            result = read_object_bytes(handle->file, reader, data.data(), static_cast<uint32_t>(data.size()));
+            if (result == VBLF_OK)
+            {
+                vblf_can_message_t message{};
+                message.header.base = header;
+                message.header.object_flags = read_u32_le(data.data());
+                message.header.client_index = read_u16_le(data.data() + 4);
+                message.header.object_version = read_u16_le(data.data() + 6);
+                message.header.object_time_stamp = read_u64_le(data.data() + 8);
+                message.channel = read_u16_le(data.data() + 16);
+                message.flags = data[18];
+                message.dlc = data[19];
+                message.frame_id = read_u32_le(data.data() + 20);
+                std::copy_n(data.data() + 24, 8, message.data);
+
+                // The caller supplies the base member of an actual vblf_can_message_t.
+                *reinterpret_cast<vblf_can_message_t *>(out_object) = message;
+                reader.header_pending = false;
+                return VBLF_OK;
+            }
+            if (result == VBLF_EOF)
+            {
+                result = VBLF_ERROR_TRUNCATED;
+            }
+        }
+    }
+    catch (const std::bad_alloc &)
+    {
+        result = VBLF_ERROR_OUT_OF_MEMORY;
+    }
+    catch (const std::system_error &)
+    {
+        result = VBLF_ERROR_IO;
+    }
+    catch (...)
+    {
+        result = VBLF_ERROR_INTERNAL;
+    }
+    if (handle->reader)
+    {
+        handle->reader->header_pending = false;
+        handle->reader->terminal_result = result;
+    }
+    return result;
+}
+
 /** @brief Discard one logical object using bounded storage without decoding its payload. */
 VBLF_API vblf_skip_object(vblf_handle_t *handle)
 {
@@ -741,4 +829,30 @@ VBLF_API vblf_skip_object(vblf_handle_t *handle)
         handle->reader->terminal_result = result;
     }
     return result;
+}
+
+/** @brief Accept release of the supported fixed-size object without freeing caller storage. */
+VBLF_API vblf_free_object(vblf_handle_t *handle, vblf_object_header_base_t *object)
+{
+    if (object == nullptr)
+    {
+        return VBLF_OK;
+    }
+    if (handle == nullptr)
+    {
+        return VBLF_ERROR_INVALID_ARGUMENT;
+    }
+    if (handle->mode != VBLF_OPEN_READ)
+    {
+        return VBLF_ERROR_INVALID_MODE;
+    }
+    if (object->object_type != VBLF_OBJ_TYPE_CAN_MESSAGE)
+    {
+        return VBLF_ERROR_UNSUPPORTED_OBJECT;
+    }
+    if (object->header_version != 1 || object->header_size != 32)
+    {
+        return VBLF_ERROR_UNSUPPORTED_HEADER;
+    }
+    return object->object_size == 48 ? VBLF_OK : VBLF_ERROR_INVALID_SIZE;
 }

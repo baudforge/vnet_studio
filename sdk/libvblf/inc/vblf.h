@@ -26,20 +26,18 @@
 #ifndef VBLF_H_INCLUDED
 #define VBLF_H_INCLUDED
 
-#include <stddef.h>
 #include <stdint.h>
 
 /**
  * @file vblf.h
  * @brief Public C API and constants for BLF file access.
  *
- * @details This initial header contains constants, the common object header and
- * seven core file/object API declarations. Concrete object layouts and function
- * implementations will be introduced separately. Original constant values,
- * reserved IDs and flag combinations are preserved.
+ * @details Contains constants, object layouts and seven core file/object API
+ * declarations. Decoder support is documented on vblf_read_object_secure().
+ * Original constant values, reserved IDs and flag combinations are preserved.
  *
- * @note Constants and base header fields are adapted from the MIT-licensed
- * @c src/vblf/constants.py and @c src/vblf/general.py at revision
+ * @note Constants and object fields are adapted from the MIT-licensed
+ * @c src/vblf/constants.py, @c src/vblf/general.py and @c src/vblf/can.py at revision
  * @c e509ae9c64c834851418e74e9bd89a32efe41d3c.
  * Python @c from_int() conversion helpers are not implemented in this header.
  * No C++ exception may cross the C API boundary.
@@ -476,6 +474,40 @@ typedef struct vblf_object_header_base
 } vblf_object_header_base_t;
 
 /**
+ * @brief Version 1 object header, with a common metadata prefix.
+ * @note The serialized header is 32 bytes. Timestamps and flags are preserved
+ * without unit conversion. TIME_TEN_MICS denotes 10-microsecond ticks and
+ * TIME_ONE_NANS denotes nanosecond ticks relative to measurement start.
+ */
+typedef struct vblf_object_header
+{
+    vblf_object_header_base_t base; /**< Common metadata at offset zero. */
+    vblf_obj_flags_t object_flags;  /**< Raw header flags, including unknown bits. */
+    uint16_t client_index;          /**< Original client index. */
+    uint16_t object_version;        /**< Object-specific version, distinct from header_version. */
+    uint64_t object_time_stamp;     /**< Raw unsigned timestamp in the unit indicated by object_flags. */
+} vblf_object_header_t;
+
+/**
+ * @brief Classic CAN message with inline payload storage (CAN_MESSAGE, type 1).
+ * @note Uses a version 1 header. Its serialized size is 48 bytes. This host
+ * structure must not be copied directly to or from a file.
+ * @note Raw values are retained, including unknown flags, identifier bits and
+ * DLC values greater than eight. Never use dlc directly to index past data[8].
+ * No dynamic members are allocated; vblf_free_object() is optional for this type.
+ * @see vblf_read_object_secure
+ */
+typedef struct vblf_can_message
+{
+    vblf_object_header_t header; /**< Version 1 header at offset zero. */
+    uint16_t channel;            /**< Original BLF channel number, normally one-based. */
+    uint8_t flags;               /**< Raw CAN flags: bit 0 denotes transmit, bit 7 denotes RTR. */
+    uint8_t dlc;                 /**< Raw data length code; the inline data array always holds eight bytes. */
+    uint32_t frame_id;           /**< Raw identifier; bit 31 marks an extended CAN identifier. */
+    uint8_t data[8];             /**< All eight stored bytes, including bytes beyond the reported DLC. */
+} vblf_can_message_t;
+
+/**
  * @brief Opaque, library-owned file handle.
  * @note Separate handles may be used concurrently. Calls on one handle require
  * external synchronization, including object release and handle close.
@@ -572,7 +604,9 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
  * @retval VBLF_ERROR_INVALID_MODE The handle was not opened for reading.
  * @retval VBLF_ERROR_BUFFER_TOO_SMALL The concrete C structure does not fit.
  * @retval VBLF_ERROR_UNSUPPORTED_OBJECT The object type has no decoder.
- * @retval VBLF_ERROR_UNSUPPORTED_HEADER The object header version is unsupported.
+ * @retval VBLF_ERROR_UNSUPPORTED_HEADER The header version or header size is unsupported.
+ * @retval VBLF_ERROR_INVALID_SIZE The serialized size does not match the supported layout.
+ * @retval VBLF_ERROR_TRUNCATED The input ends within the object.
  * @return Another negative vblf_result_t on failure.
  *
  * @pre The storage must not contain dynamic members from an earlier read that
@@ -580,16 +614,19 @@ VBLF_API vblf_peek_object(vblf_handle_t *handle, vblf_object_header_base_t *out_
  * @post The output remains unchanged at EOF or on error.
  * @post Buffer-too-small, unsupported-object and unsupported-header errors leave
  * the object pending. The caller may retry or skip it. Other errors do not
- * guarantee a recoverable stream position.
+ * guarantee a recoverable stream position. Stream errors invalidate the pending
+ * header and are cached until close.
  * @note The library allocates variable-length members. They remain valid across
  * later reads until released through vblf_free_object() on the same handle.
  * The caller-owned structure itself is never allocated or freed by the library.
- * @note Concrete object layouts will be introduced separately. A serialized
- * object_size is not a valid substitute for the C storage capacity.
+ * @note Currently supports only VBLF_OBJ_TYPE_CAN_MESSAGE using
+ * vblf_can_message_t, header_version 1, header_size 32 and object_size 48.
+ * Raw field values are preserved without timestamp or CAN identifier conversion.
+ * A serialized object_size is not a valid substitute for the C storage capacity.
  * @see vblf_peek_object, vblf_skip_object, vblf_free_object
  */
 VBLF_API vblf_read_object_secure(vblf_handle_t *handle, vblf_object_header_base_t *out_object,
-                                 size_t object_capacity);
+                                 uint32_t object_capacity);
 
 /**
  * @brief Skip the next object without decoding its payload.
@@ -648,7 +685,7 @@ VBLF_API vblf_skip_object(vblf_handle_t *handle);
  * @see vblf_close_handle
  */
 VBLF_API vblf_write_object(vblf_handle_t *handle, const vblf_object_header_base_t *object,
-                           size_t object_capacity);
+                           uint32_t object_capacity);
 
 /**
  * @brief Release dynamic members allocated by a successful object read.
@@ -662,6 +699,9 @@ VBLF_API vblf_write_object(vblf_handle_t *handle, const vblf_object_header_base_
  * release, or @p object was NULL.
  * @retval VBLF_ERROR_INVALID_ARGUMENT A required argument is invalid.
  * @retval VBLF_ERROR_INVALID_MODE The handle was not opened for reading.
+ * @retval VBLF_ERROR_UNSUPPORTED_OBJECT The object type has no release implementation.
+ * @retval VBLF_ERROR_UNSUPPORTED_HEADER The header version or header size is unsupported.
+ * @retval VBLF_ERROR_INVALID_SIZE The serialized size does not match the supported layout.
  * @return Another negative vblf_result_t on failure.
  *
  * @pre A non-NULL object must come from a successful vblf_read_object_secure()
@@ -674,6 +714,8 @@ VBLF_API vblf_write_object(vblf_handle_t *handle, const vblf_object_header_base_
  * The caller-owned structure itself is not released, and its base header is kept.
  * @note Release all read objects before closing their handle. Do not use free(),
  * delete or another allocator to release library-allocated members.
+ * @note Currently supports vblf_can_message_t only. It contains no dynamic
+ * members, so releasing it is optional and leaves every field unchanged.
  * @see vblf_read_object_secure, vblf_close_handle
  */
 VBLF_API vblf_free_object(vblf_handle_t *handle, vblf_object_header_base_t *object);
